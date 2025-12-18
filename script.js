@@ -7,8 +7,78 @@ const statusMessage = document.getElementById('statusMessage');
 const resultCard = document.getElementById('resultCard');
 const deployedUrl = document.getElementById('deployedUrl');
 const newDeployBtn = document.getElementById('newDeployBtn');
+const quotaDisplay = document.getElementById('quotaDisplay');
+const quotaText = document.getElementById('quotaText');
 
 let selectedFile = null;
+let cooldownTimer = null;
+
+// Check quota on load
+checkQuota();
+
+async function checkQuota() {
+    try {
+        const response = await fetch('/api/deploy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                name: 'quota-check', 
+                fileData: '', 
+                fileName: 'check.html' 
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.remainingQuota !== undefined) {
+            updateQuotaDisplay(data.remainingQuota);
+        }
+        
+        if (data.cooldown && data.remainingSeconds) {
+            startCooldownTimer(data.remainingSeconds);
+        }
+    } catch (e) {
+        quotaText.textContent = 'Quota: --/50';
+    }
+}
+
+function updateQuotaDisplay(remaining) {
+    quotaText.textContent = `Quota tersisa: ${remaining}/50`;
+    
+    if (remaining <= 0) {
+        quotaDisplay.classList.add('error');
+        deployBtn.disabled = true;
+    } else if (remaining <= 10) {
+        quotaDisplay.classList.add('warning');
+    } else {
+        quotaDisplay.classList.remove('warning', 'error');
+    }
+}
+
+function startCooldownTimer(seconds) {
+    deployBtn.disabled = true;
+    
+    if (cooldownTimer) clearInterval(cooldownTimer);
+    
+    let remaining = seconds;
+    
+    const updateCooldown = () => {
+        const minutes = Math.floor(remaining / 60);
+        const secs = remaining % 60;
+        quotaText.textContent = `Cooldown: ${minutes}m ${secs}s`;
+        quotaDisplay.classList.add('warning');
+        
+        if (remaining <= 0) {
+            clearInterval(cooldownTimer);
+            deployBtn.disabled = false;
+            checkQuota();
+        }
+        remaining--;
+    };
+    
+    updateCooldown();
+    cooldownTimer = setInterval(updateCooldown, 1000);
+}
 
 // File upload handler
 fileUpload.addEventListener('change', (e) => {
@@ -108,6 +178,16 @@ async function deployToVercel(name, file) {
         const data = await response.json();
         
         if (!response.ok) {
+            // Handle cooldown
+            if (data.cooldown && data.remainingSeconds) {
+                startCooldownTimer(data.remainingSeconds);
+            }
+            
+            // Update quota display
+            if (data.remainingQuota !== undefined) {
+                updateQuotaDisplay(data.remainingQuota);
+            }
+            
             throw new Error(data.error || 'Deploy gagal');
         }
         
@@ -115,6 +195,14 @@ async function deployToVercel(name, file) {
         deployBtn.disabled = false;
         deployBtn.classList.remove('loading');
         statusMessage.classList.add('hidden');
+        
+        // Update quota
+        if (data.remainingQuota !== undefined) {
+            updateQuotaDisplay(data.remainingQuota);
+        }
+        
+        // Start cooldown
+        startCooldownTimer(300); // 5 menit
         
         // Show result
         deployedUrl.href = data.url;
